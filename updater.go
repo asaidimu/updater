@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -22,10 +21,40 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
+// Config holds the configuration for the Updater.
+type Config struct {
+	ServerURL        string
+	AppName          string
+	Version          string
+	ClientToken      string           // Token for client authentication
+	ServerPublicKey  *rsa.PublicKey   // Server's public key for response verification
+	ClientID         string
+	Platform         string
+	Architecture     string
+	SpawnArgsFunc    func(oldPath, newPath string) []string
+	PermitUpdateFunc func(UpdateInfo) bool
+}
+
+// UpdateInfo represents the update information from the server.
+type UpdateInfo struct {
+	Version   string `json:"version"`
+	URL       string `json:"url"`
+	TTL       int    `json:"ttl"`
+	Changelog string `json:"changelog"`
+	Checksum  string `json:"checksum"`
+	Signature string `json:"signature"` // Server's signature
+}
+
+// Updater manages checking for and applying updates.
+type Updater struct {
+	config     Config
+	httpClient *http.Client
+}
+
 // NewUpdater creates a new Updater instance.
 func NewUpdater(config Config) (*Updater, error) {
-	if config.ServerURL == "" || config.AppName == "" || config.Version == "" || config.PrivateKey == nil {
-		return nil, fmt.Errorf("missing required configuration: ServerURL, AppName, Version, and PrivateKey must be set")
+	if config.ServerURL == "" || config.AppName == "" || config.Version == "" || config.ClientToken == "" || config.ServerPublicKey == nil {
+		return nil, fmt.Errorf("missing required configuration: ServerURL, AppName, Version, ClientToken, and ServerPublicKey must be set")
 	}
 	if config.ClientID == "" {
 		return nil, fmt.Errorf("ClientID is required")
@@ -48,16 +77,11 @@ func NewUpdater(config Config) (*Updater, error) {
 
 // CheckForUpdate queries the update server for a newer version.
 func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
-	hash := sha256.Sum256([]byte(u.config.ClientID))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, u.config.PrivateKey, crypto.SHA256, hash[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign client ID: %w", err)
-	}
 	reqBody := map[string]string{
 		"name":         u.config.AppName,
 		"version":      u.config.Version,
 		"id":           u.config.ClientID,
-		"signature":    base64.StdEncoding.EncodeToString(signature),
+		"token":        u.config.ClientToken,
 		"platform":     u.config.Platform,
 		"architecture": u.config.Architecture,
 	}
@@ -85,6 +109,10 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&update); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	// Verify server signature
+	if err := u.verifySignature(&update); err != nil {
+		return nil, fmt.Errorf("failed to verify server signature: %w", err)
+	}
 	// Verify version is newer
 	current, err := semver.NewVersion(u.config.Version)
 	if err != nil {
@@ -98,6 +126,24 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 		return nil, nil
 	}
 	return &update, nil
+}
+
+// verifySignature verifies the server's signature on the UpdateInfo.
+func (u *Updater) verifySignature(update *UpdateInfo) error {
+	signature, err := base64.StdEncoding.DecodeString(update.Signature)
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+	// Temporarily clear signature for hashing
+	sig := update.Signature
+	update.Signature = ""
+	defer func() { update.Signature = sig }()
+	data, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update info: %w", err)
+	}
+	hash := sha256.Sum256(data)
+	return rsa.VerifyPKCS1v15(u.config.ServerPublicKey, crypto.SHA256, hash[:], signature)
 }
 
 // PerformUpdate downloads the new binary and initiates the swap, if permitted.
