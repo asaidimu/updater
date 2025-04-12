@@ -3,6 +3,7 @@ package updater
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
