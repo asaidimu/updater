@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/asaidimu/updater/compare/v1.0.0...v1.0.1) (2025-04-12)
+
+
+### Bug Fixes
+
+* updated api ([b96a956](https://github.com/asaidimu/updater/commit/b96a9563eb60b04dedab42a3297128c08322800a))
+
 # 1.0.0 (2025-04-12)
 
 
